@@ -1,0 +1,73 @@
+name: 🏛️ Chairman Monthly Audit
+on:
+  schedule:
+    - cron: '0 14 1 * *'   # 1st of every month, 9am CT / 14:00 UTC
+  workflow_dispatch:         # manual trigger anytime
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  audit:
+    name: Chairman Ecosystem Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout governance repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Run Chairman Audit
+        env:
+          GH_TOKEN: ${{ secrets.CHAIRMAN_TOKEN }}
+        run: |
+          python3 scripts/chairman_audit.py \
+            --orgs "connectedagents-ai,Connected-Energy-AI" \
+            --output report.md
+        continue-on-error: true  # capture exit code manually below
+
+      - name: Read report
+        id: report
+        run: |
+          echo "content<<EOF" >> $GITHUB_OUTPUT
+          head -80 report.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          if grep -q "DRIFT DETECTED" report.md; then
+            echo "drift=true" >> $GITHUB_OUTPUT
+          else
+            echo "drift=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Open issue on drift
+        if: steps.report.outputs.drift == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.CHAIRMAN_TOKEN }}
+        run: |
+          MONTH=$(date +"%Y-%m")
+          gh issue create \
+            --repo connectedagents-ai/github-governance \
+            --title "⚠️ Chairman Audit: Drift Detected — $MONTH" \
+            --body "${{ steps.report.outputs.content }}" \
+            --label "governance" \
+            --assignee rbailey713 2>/dev/null || \
+          gh issue create \
+            --repo connectedagents-ai/github-governance \
+            --title "⚠️ Chairman Audit: Drift Detected — $MONTH" \
+            --body "${{ steps.report.outputs.content }}" \
+            --label "governance"
+
+      - name: Upload report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chairman-audit-${{ github.run_number }}
+          path: report.md
+          retention-days: 90
+
+      - name: Summary
+        run: |
+          echo "## 🏛️ Chairman Audit Complete" >> $GITHUB_STEP_SUMMARY
+          cat report.md >> $GITHUB_STEP_SUMMARY

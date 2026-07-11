@@ -1,0 +1,96 @@
+name: Stale Repo Detector
+
+on:
+  schedule:
+    # Runs at 09:00 UTC on the 1st of every month
+    - cron: '0 9 1 * *'
+  workflow_dispatch:
+    inputs:
+      days_threshold:
+        description: 'Number of days without a push to consider stale'
+        required: false
+        default: '180'
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  DAYS_THRESHOLD: ${{ github.event.inputs.days_threshold || '180' }}
+
+jobs:
+  detect-stale-repos:
+    name: Detect Stale Repositories
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Authenticate GitHub CLI
+        run: echo "GH CLI authenticated via GITHUB_TOKEN"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: List stale repositories
+        id: stale-check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=================================================="
+          echo "  GitHub Chairman — Stale Repository Report"
+          echo "  Organization: connectedagents-ai"
+          echo "  Threshold: Repos not pushed in ${DAYS_THRESHOLD}+ days"
+          echo "  Run Date: $(date -u '+%Y-%m-%d %H:%M UTC')"
+          echo "=================================================="
+          echo ""
+
+          CUTOFF_DATE=$(date -u -d "-${DAYS_THRESHOLD} days" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || \
+                        date -u -v-${DAYS_THRESHOLD}d '+%Y-%m-%dT%H:%M:%SZ')
+
+          echo "Cutoff date (repos not pushed since): $CUTOFF_DATE"
+          echo ""
+          echo "Fetching repositories..."
+          echo ""
+
+          STALE_COUNT=0
+          TOTAL_COUNT=0
+
+          echo "| Repository | Last Push | Days Since Push | Visibility |"
+          echo "|------------|-----------|-----------------|------------|"
+
+          while IFS= read -r repo_json; do
+            NAME=$(echo "$repo_json" | jq -r '.name')
+            PUSHED=$(echo "$repo_json" | jq -r '.pushedAt // "never"')
+            VISIBILITY=$(echo "$repo_json" | jq -r '.visibility')
+            TOTAL_COUNT=$((TOTAL_COUNT + 1))
+
+            if [ "$PUSHED" = "null" ] || [ "$PUSHED" = "never" ] || [ "$PUSHED" \< "$CUTOFF_DATE" ]; then
+              if [ "$PUSHED" = "null" ] || [ "$PUSHED" = "never" ]; then
+                DAYS="N/A"
+              else
+                PUSH_EPOCH=$(date -d "$PUSHED" +%s 2>/dev/null || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$PUSHED" +%s)
+                NOW_EPOCH=$(date +%s)
+                DAYS=$(( (NOW_EPOCH - PUSH_EPOCH) / 86400 ))
+              fi
+              echo "| $NAME | ${PUSHED:0:10} | $DAYS | $VISIBILITY |"
+              STALE_COUNT=$((STALE_COUNT + 1))
+            fi
+          done < <(gh api graphql -f query='
+            query($org: String!, $cursor: String) {
+              organization(login: $org) {
+                repositories(first: 100, after: $cursor) {
+                  nodes { name pushedAt visibility }
+                }
+              }
+            }' -f org=connectedagents-ai --jq '.data.organization.repositories.nodes[]')
+
+          echo ""
+          echo "=================================================="
+          echo "SUMMARY: $STALE_COUNT stale / $TOTAL_COUNT total repositories"
+          echo "=================================================="
+
+          if [ "$STALE_COUNT" -gt 0 ]; then
+            echo ""
+            echo "⚠️  ACTION RECOMMENDED: Review the stale repositories above."
+            echo "   Consider: archiving, deleting, or resuming work on these repos."
+          else
+            echo "✅ All repositories have recent activity. No action needed."
+          fi
