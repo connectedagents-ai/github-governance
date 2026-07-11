@@ -42,8 +42,11 @@ def check_repo(org: str, repo: dict) -> dict:
         DRIFT_MARKERS.append(f'{org}/{name}: no description')
 
     # Check topics
-    topics = repo.get('repositoryTopics', [])
-    topic_names = [t['topic']['name'] for t in topics] if topics else []
+    topics = repo.get('repositoryTopics') or []
+    if topics and isinstance(topics[0], dict):
+        topic_names = [t.get('topic', {}).get('name', t.get('name', '')) for t in topics]
+    else:
+        topic_names = [t for t in topics if isinstance(t, str)]
     if len(topic_names) < REQUIRED_TOPICS_MIN:
         issues.append(f'only {len(topic_names)} topics (need {REQUIRED_TOPICS_MIN}+)')
         DRIFT_MARKERS.append(f'{org}/{name}: insufficient topics')
